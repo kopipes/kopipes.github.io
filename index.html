@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-R" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Penerjemah Percakapan Real-time</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+    .animate-glow-ring {
+      animation: glow 1.5s infinite alternate;
+    }
+    @keyframes glow {
+      from { box-shadow: 0 0 10px 0px #0ea5e9; }
+      to { box-shadow: 0 0 20px 8px #0ea5e9; }
+    }
+    .animate-thinking {
+      animation: thinking 1.2s infinite ease-in-out;
+    }
+    @keyframes thinking {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.1); opacity: 0.7; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-fade-in {
+      animation: fadeIn 0.5s ease-in-out;
+    }
+     @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+  <body class="bg-gray-100 text-gray-800">
+    <div id="root"></div>
+    <script type="module">
+      import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@^19.1.0';
+      import ReactDOM from 'https://esm.sh/react-dom@^19.1.0/client';
+      import { GoogleGenAI } from 'https://esm.sh/@google/genai@^1.10.0';
+
+      const e = React.createElement;
+
+      // --- Bundled Code ---
+
+      // From services/geminiService.ts
+      const geminiService = (() => {
+        const langMap = { id: 'Indonesian', en: 'English', ja: 'Japanese' };
+        
+        const translateText = async (apiKey, text, sourceLang, targetLang) => {
+          if (!apiKey) {
+             throw new Error("API_KEY environment variable not set.");
+          }
+          const ai = new GoogleGenAI({ apiKey });
+          const model = 'gemini-2.5-flash';
+          const sourceLangFull = langMap[sourceLang];
+          const targetLangFull = langMap[targetLang];
+          const systemInstruction = `You are an expert translator for real-time conversation.\nTranslate from ${sourceLangFull} to natural, spoken-style ${targetLangFull}.\n\n**Core instruction**: Do not over-explain. Provide a translation that is accurate, concise, and clearly understandable when spoken aloud. (In Indonesian: "jangan over explain the sentence, cukup jelaskan artinya secara akurat, singkat, dapat dimengerti dengan jelas oleh pendengar").\n\nStyle Guide:\n- Translate into natural, conversational language.\n- Be prepared for informal language (e.g., "bahasa sehari-hari" or "gaul" for Indonesian).\n- Output ONLY the translated text. Do not add any extra commentary or labels.\n`;
+          try {
+            const response = await ai.models.generateContent({
+              model,
+              contents: text,
+              config: { systemInstruction, thinkingConfig: { thinkingBudget: 0 } },
+            });
+            return response.text;
+          } catch (error) {
+            console.error("Error translating text:", error);
+            throw new Error("Failed to get translation from Gemini API.");
+          }
+        };
+        return { translateText };
+      })();
+
+      // From hooks/useSpeechRecognition.ts
+      const useSpeechRecognition = (onResult, onError) => {
+        const [isListening, setIsListening] = useState(false);
+        const recognitionRef = useRef(null);
+        const onResultRef = useRef(onResult);
+        useEffect(() => { onResultRef.current = onResult; }, [onResult]);
+        const onErrorRef = useRef(onError);
+        useEffect(() => { onErrorRef.current = onError; }, [onError]);
+
+        const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        useEffect(() => {
+          if (!SpeechRecognitionAPI) {
+            console.error("Speech Recognition not supported in this browser.");
+            onErrorRef.current('not-supported');
+            return;
+          }
+          const recognition = new SpeechRecognitionAPI();
+          recognitionRef.current = recognition;
+          recognition.continuous = false;
+          recognition.interimResults = false;
+          recognition.onresult = (event) => {
+            const transcript = Array.from(event.results).map(result => result[0]).map(result => result.transcript).join('');
+            if (transcript.trim()) onResultRef.current(transcript.trim());
+          };
+          recognition.onend = () => setIsListening(false);
+          recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error, event.message);
+            onErrorRef.current(event.error);
+            setIsListening(false);
+          };
+          return () => {
+            if (recognitionRef.current) {
+              recognitionRef.current.stop();
+              recognitionRef.current.onresult = null;
+              recognitionRef.current.onend = null;
+              recognitionRef.current.onerror = null;
+            }
+          };
+        }, [SpeechRecognitionAPI]);
+
+        const startListening = useCallback((lang) => {
+          if (recognitionRef.current && !isListening) {
+            try {
+              recognitionRef.current.lang = lang;
+              recognitionRef.current.start();
+              setIsListening(true);
+            } catch (err) {
+              console.error("Could not start recognition:", err);
+              onErrorRef.current('start-failed');
+            }
+          }
+        }, [isListening]);
+
+        const stopListening = useCallback(() => {
+          if (recognitionRef.current && isListening) {
+            setIsListening(false);
+            try { recognitionRef.current.stop(); } catch(err) { console.error("Error stopping recognition:", err); }
+          }
+        }, [isListening]);
+        
+        return { isListening, startListening, stopListening, isSupported: !!SpeechRecognitionAPI };
+      };
+
+      // From hooks/useSpeechSynthesis.ts
+      const useSpeechSynthesis = (onEnd) => {
+        const [pitch, setPitch] = useState(1);
+        const [rate, setRate] = useState(1);
+        const [voices, setVoices] = useState([]);
+        const [selectedVoices, setSelectedVoices] = useState({ id: null, en: null, ja: null });
+
+        useEffect(() => {
+          const handleVoicesChanged = () => {
+            const availableVoices = window.speechSynthesis.getVoices();
+            if (availableVoices.length === 0) return;
+            setVoices(availableVoices);
+            setSelectedVoices(prev => {
+              const newSelectedVoices = { ...prev };
+              const languages = ['id', 'en', 'ja'];
+              let needsUpdate = false;
+              languages.forEach(lang => {
+                if (newSelectedVoices[lang] === null) {
+                  const voicesForLang = availableVoices.filter(v => v.lang.startsWith(lang));
+                  if(voicesForLang.length > 0) {
+                    const voiceQualityPreference = ['Google', 'Natural', 'Neural'];
+                    let bestVoice = null;
+                    for (const quality of voiceQualityPreference) {
+                      const foundVoice = voicesForLang.find(v => v.name.includes(quality));
+                      if (foundVoice) { bestVoice = foundVoice; break; }
+                    }
+                    newSelectedVoices[lang] = bestVoice || voicesForLang.find(v => v.default) || voicesForLang[0];
+                    needsUpdate = true;
+                  }
+                }
+              });
+              return needsUpdate ? newSelectedVoices : prev;
+            });
+          };
+          handleVoicesChanged();
+          window.speechSynthesis.onvoiceschanged = handleVoicesChanged;
+          return () => {
+            window.speechSynthesis.onvoiceschanged = null;
+            window.speechSynthesis.cancel();
+          };
+        }, []);
+
+        const speak = useCallback((text, targetLang) => {
+          if (!text.trim() || !window.speechSynthesis) { onEnd(); return; }
+          window.speechSynthesis.cancel(); 
+          const voiceToUse = selectedVoices[targetLang];
+          const rawSentences = text.match(/([^.!?]+[.!?]*)/g) || [];
+          const sentences = rawSentences.map(s => s.trim()).filter(s => s.length > 0);
+          if (sentences.length === 0) { onEnd(); return; }
+          sentences.forEach((sentence, index) => {
+              const utterance = new SpeechSynthesisUtterance(sentence);
+              if (voiceToUse) utterance.voice = voiceToUse;
+              else utterance.lang = targetLang;
+              utterance.pitch = pitch;
+              utterance.rate = rate;
+              if (index === sentences.length - 1) utterance.onend = onEnd;
+              window.speechSynthesis.speak(utterance);
+          });
+        }, [pitch, rate, selectedVoices, onEnd]);
+
+        const stop = useCallback(() => { window.speechSynthesis.cancel(); },[]);
+        const setVoiceForLang = useCallback((lang, voice) => { setSelectedVoices(prev => ({ ...prev, [lang]: voice })); }, []);
+
+        return { speak, stop, pitch, setPitch, rate, setRate, voices, selectedVoices, setVoiceForLang, isSupported: !!window.speechSynthesis };
+      };
+
+      // From components/ConversationBubble.tsx
+      const LanguageFlag = ({ lang }) => {
+          const flag = lang === 'id' ? '🇮🇩' : lang === 'en' ? '🇬🇧' : '🇯🇵';
+          return e('span', { className: "text-xl mr-2" }, flag);
+      };
+
+      const ConversationBubble = ({ entry, align, status, onReplay }) => {
+        const isUser = align === 'right';
+        const bubbleClasses = isUser ? 'bg-gradient-to-br from-sky-500 to-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-bl-none shadow-sm';
+        const alignmentClass = isUser ? 'items-end' : 'items-start';
+        const isReplayDisabled = status !== 'idle';
+
+        return e('div', { className: `flex flex-col mb-6 animate-fade-in ${alignmentClass}` },
+          e('div', { className: `rounded-2xl p-4 max-w-lg transition-all duration-300 ${bubbleClasses}` },
+            e('div', { className: "flex items-center mb-2" },
+              e(LanguageFlag, { lang: entry.sourceLang }),
+              e('p', { className: isUser ? "text-sky-100" : "text-gray-600" }, entry.original)
+            ),
+            e('hr', { className: `my-2 ${isUser ? 'border-blue-400/50' : 'border-gray-200'}` }),
+            e('div', { className: "flex items-center justify-between gap-3" },
+              e('div', { className: "flex items-center" },
+                e(LanguageFlag, { lang: entry.targetLang }),
+                e('p', { className: `font-semibold text-lg ${isUser ? 'text-white' : 'text-black'}` }, entry.translation)
+              ),
+              e('button', {
+                  onClick: () => onReplay(entry.translation, entry.targetLang),
+                  disabled: isReplayDisabled,
+                  className: `p-2 rounded-full transition-colors ${isUser ? 'text-white/70 hover:text-white hover:bg-white/20' : 'text-gray-500 hover:text-sky-600 hover:bg-gray-200'} disabled:opacity-30 disabled:cursor-not-allowed`,
+                  'aria-label': "Replay translation"
+                },
+                e('i', { className: "fa-solid fa-volume-high" })
+              )
+            )
+          )
+        );
+      };
+
+      // From components/Controls.tsx
+      const Icon = ({ icon, className }) => e('i', { className: `${icon} ${className || ''}` });
+
+      const VoiceSelector = ({ id, label, langCode, voices, selectedValue, onChange, disabled }) => {
+          const filteredVoices = voices.filter(v => v.lang.startsWith(langCode));
+          if (filteredVoices.length === 0) return null;
+          return e('div', null,
+              e('label', { htmlFor: id, className: "block text-sm font-medium text-gray-700 mb-1" }, label),
+              e('select', { id, value: selectedValue?.name || '', onChange: (ev) => onChange(langCode, ev.target.value), className: "w-full bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-sky-500 focus:border-sky-500 block p-2.5 disabled:opacity-50 disabled:cursor-not-allowed", disabled },
+                  ...filteredVoices.map(voice => e('option', { key: voice.name, value: voice.name }, `${voice.name} (${voice.lang})`))
+              )
+          );
+      };
+
+      const Controls = ({
+        isSessionActive, status, activeInput, onStartSession, onEndSession, onListenIndonesian,
+        onListenPartner, onCancelListening, voices, selectedVoices, onVoiceChange,
+        pitch, setPitch, rate, setRate, isSpeechSupported, partnerLanguage, onPartnerLanguageChange
+      }) => {
+        const [showSettings, setShowSettings] = useState(false);
+        const isBusy = status !== 'idle' && status !== 'error';
+        
+        const partnerLangDetails = {
+          'en-US': { name: 'English', flag: '🇬🇧', code: 'en' },
+          'ja-JP': { name: 'Japanese', flag: '🇯🇵', code: 'ja' },
+        };
+        
+        const renderSessionInactiveView = () => e('div', { className: "flex flex-col items-center justify-center h-full animate-fade-in" },
+          e('div', { className: "text-center mb-6" },
+            e('label', { className: "text-lg font-semibold text-gray-700" }, "Translate Indonesian to/from:"),
+            e('div', { className: "flex justify-center gap-3 mt-3" },
+              e('button', { onClick: () => onPartnerLanguageChange('en-US'), className: `px-6 py-2 text-md font-semibold rounded-full transition-all duration-300 flex items-center gap-2 ${partnerLanguage === 'en-US' ? 'bg-sky-500 text-white shadow-lg scale-105' : 'bg-gray-200 text-gray-800 hover:bg-gray-300'}`}, "🇬🇧 English"),
+              e('button', { onClick: () => onPartnerLanguageChange('ja-JP'), className: `px-6 py-2 text-md font-semibold rounded-full transition-all duration-300 flex items-center gap-2 ${partnerLanguage === 'ja-JP' ? 'bg-sky-500 text-white shadow-lg scale-105' : 'bg-gray-200 text-gray-800 hover:bg-gray-300'}`}, "🇯🇵 Japanese")
+            )
+          ),
+          e('button', { onClick: onStartSession, className: "bg-gradient-to-br from-sky-500 to-blue-500 hover:from-sky-600 hover:to-blue-600 text-white font-bold py-4 px-8 rounded-full flex items-center transition-all duration-300 shadow-lg transform hover:scale-105", disabled: !isSpeechSupported},
+            e(Icon, { icon: "fa-solid fa-play", className: "mr-3" }), "Start Session")
+        );
+
+        const renderSessionActiveView = () => {
+          const isListening = status === 'listening';
+          const idButtonIsActive = activeInput === 'id';
+          const partnerButtonIsActive = activeInput === 'partner';
+          const isIdButtonDisabled = isBusy && !(idButtonIsActive && isListening);
+          const isPartnerButtonDisabled = isBusy && !(partnerButtonIsActive && isListening);
+          const getStatusContent = (currentStatus) => {
+              switch(currentStatus) {
+                  case 'listening': return { icon: 'fa-solid fa-xmark', text: 'Cancel' };
+                  case 'processing': return { icon: 'fa-solid fa-brain animate-thinking text-purple-500', text: 'Processing...' };
+                  case 'speaking': return { icon: 'fa-solid fa-volume-high animate-pulse text-sky-500', text: 'Speaking...' };
+                  default: return { icon: 'fa-solid fa-microphone', text: ''};
+              }
+          };
+          const idButtonContent = idButtonIsActive && isBusy ? getStatusContent(status) : { icon: 'fa-solid fa-microphone', text: 'Speak Indonesian' };
+          const partnerButtonContent = partnerButtonIsActive && isBusy ? getStatusContent(status) : { icon: 'fa-solid fa-microphone', text: `Speak ${partnerLangDetails[partnerLanguage].name}` };
+          const idButtonColorClass = idButtonIsActive && isListening ? 'bg-yellow-400 hover:bg-yellow-500 text-gray-800' : 'bg-white hover:bg-gray-200 border border-gray-200 text-gray-800';
+          const partnerButtonColorClass = partnerButtonIsActive && isListening ? 'bg-yellow-400 hover:bg-yellow-500 text-gray-800' : 'bg-white hover:bg-gray-200 border border-gray-200 text-gray-800';
+
+          return e('div', { className: "flex flex-col items-center justify-between h-full animate-fade-in py-2" },
+            e('div', { className: "flex w-full justify-center items-stretch gap-4" },
+              e('button', { onClick: idButtonIsActive && isListening ? onCancelListening : onListenIndonesian, disabled: isIdButtonDisabled, className: `flex-1 flex flex-col items-center justify-center gap-2 font-semibold py-3 px-4 rounded-xl transition-all duration-300 shadow-md disabled:bg-gray-200 disabled:cursor-not-allowed disabled:text-gray-500 ${idButtonColorClass}`},
+                e('span', { className: "text-2xl" }, "🇮🇩"),
+                e('div', { className: "flex items-center gap-2" }, e(Icon, { icon: idButtonContent.icon }), e('span', { className: "text-sm" }, idButtonContent.text))
+              ),
+              e('button', { onClick: partnerButtonIsActive && isListening ? onCancelListening : onListenPartner, disabled: isPartnerButtonDisabled, className: `flex-1 flex flex-col items-center justify-center gap-2 font-semibold py-3 px-4 rounded-xl transition-all duration-300 shadow-md disabled:bg-gray-200 disabled:cursor-not-allowed disabled:text-gray-500 ${partnerButtonColorClass}`},
+                e('span', { className: "text-2xl" }, partnerLangDetails[partnerLanguage].flag),
+                e('div', { className: "flex items-center gap-2" }, e(Icon, { icon: partnerButtonContent.icon }), e('span', { className: "text-sm" }, partnerButtonContent.text))
+              )
+            ),
+            e('div', { className: "w-full flex justify-center mt-4" },
+              e('button', { onClick: onEndSession, className: "bg-red-600/90 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-full flex items-center transition-all duration-300 shadow-lg transform hover:scale-105"},
+                e(Icon, { icon: "fa-solid fa-stop", className: "mr-2" }), "End Session")
+            )
+          );
+        };
+
+        return e('div', { className: "bg-white/80 backdrop-blur-md p-4 border-t border-gray-200/80 shadow-2xl flex flex-col" },
+          e('div', { className: "flex-grow min-h-[180px]" }, !isSessionActive ? renderSessionInactiveView() : renderSessionActiveView()),
+          e('div', { className: "max-w-lg mx-auto w-full mt-2" },
+            e('div', { className: "text-center" },
+              e('button', { onClick: () => setShowSettings(!showSettings), className: "text-gray-500 text-sm hover:text-sky-600 transition-colors" },
+                e(Icon, { icon: "fa-solid fa-sliders", className: "mr-2" }), " Voice Settings ", e(Icon, { icon: `fa-solid ${showSettings ? 'fa-chevron-up' : 'fa-chevron-down'}`, className: "ml-1 text-xs" }))
+            ),
+            showSettings && e('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-6 mt-3 p-4 bg-gray-100 rounded-lg animate-fade-in" },
+              e(VoiceSelector, { id: "id-voice", label: "Indonesian Voice", langCode: "id", voices, selectedValue: selectedVoices.id, onChange: onVoiceChange, disabled: isSessionActive }),
+              e(VoiceSelector, { id: "partner-voice", label: `${partnerLangDetails[partnerLanguage].name} Voice`, langCode: partnerLangDetails[partnerLanguage].code, voices, selectedValue: selectedVoices[partnerLangDetails[partnerLanguage].code], onChange: onVoiceChange, disabled: isSessionActive }),
+              e('div', { className: "md:col-span-1" },
+                e('label', { htmlFor: "rate-slider", className: "block text-sm font-medium text-gray-700 mb-2" }, `Voice Speed (${rate.toFixed(1)})`),
+                e('input', { id: "rate-slider", type: "range", min: "0.5", max: "2", step: "0.1", value: rate, onChange: (ev) => setRate(parseFloat(ev.target.value)), className: "w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer accent-sky-500 disabled:opacity-50 disabled:cursor-not-allowed", disabled: isBusy })
+              ),
+              e('div', { className: "md:col-span-1" },
+                e('label', { htmlFor: "pitch-slider", className: "block text-sm font-medium text-gray-700 mb-2" }, `Voice Pitch (${pitch.toFixed(1)})`),
+                e('input', { id: "pitch-slider", type: "range", min: "0", max: "2", step: "0.1", value: pitch, onChange: (ev) => setPitch(parseFloat(ev.target.value)), className: "w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer accent-sky-500 disabled:opacity-50 disabled:cursor-not-allowed", disabled: isBusy })
+              )
+            )
+          )
+        );
+      };
+
+      // From App.tsx
+      const App = () => {
+        const [conversation, setConversation] = useState([]);
+        const [status, setStatus] = useState('idle');
+        const [isSessionActive, setIsSessionActive] = useState(false);
+        const [apiKeyError, setApiKeyError] = useState(false);
+        const [partnerLanguage, setPartnerLanguage] = useState('en-US');
+        const [activeInput, setActiveInput] = useState(null);
+        const conversationEndRef = useRef(null);
+        
+        // This is where you would insert your API key for deployment.
+        const API_KEY = AIzaSyBbLKN5gx3fHfeNNan5VC4vLkd3XimTo_c;
+
+        useEffect(() => {
+          if (!API_KEY) {
+            setApiKeyError(true);
+            setStatus('error');
+          }
+        }, [API_KEY]);
+
+        const handleSpeechEnd = useCallback(() => { if (isSessionActive) { setStatus('idle'); setActiveInput(null); } }, [isSessionActive]);
+        const { speak, stop: stopSpeaking, voices, selectedVoices, setVoiceForLang, pitch, setPitch, rate, setRate, isSupported: speechSupported } = useSpeechSynthesis(handleSpeechEnd);
+        const handleVoiceChange = (lang, voiceName) => { const voice = voices.find(v => v.name === voiceName) || null; setVoiceForLang(lang, voice); };
+
+        const handleTranscriptionResult = useCallback(async (transcript) => {
+          if (!isSessionActive || !activeInput) return;
+          setStatus('processing');
+          const sourceLang = activeInput === 'id' ? 'id' : (partnerLanguage === 'en-US' ? 'en' : 'ja');
+          const targetLang = activeInput === 'id' ? (partnerLanguage === 'en-US' ? 'en' : 'ja') : 'id';
+          try {
+            const translation = await geminiService.translateText(API_KEY, transcript, sourceLang, targetLang);
+            const newEntry = { id: Date.now(), original: transcript, translation, sourceLang, targetLang };
+            setConversation(prev => [...prev, newEntry]);
+            setStatus('speaking');
+            speak(translation, targetLang);
+          } catch (error) {
+            console.error("Translation failed:", error);
+            setStatus('error');
+            setTimeout(() => { if(isSessionActive) { setStatus('idle'); setActiveInput(null); } }, 2000);
+          }
+        }, [isSessionActive, speak, activeInput, partnerLanguage, API_KEY]);
+
+        const handleRecognitionError = useCallback((error) => {
+          console.error(`Recognition Error: ${error}`);
+          if (error === 'no-speech') { setStatus('idle'); setActiveInput(null); return; }
+          setStatus('error'); setActiveInput(null);
+          if (error === 'not-allowed' || error === 'service-not-allowed') { setIsSessionActive(false); stopSpeaking(); } 
+          else { setTimeout(() => { if(isSessionActive) setStatus('idle'); }, 2000); }
+        }, [stopSpeaking, isSessionActive]);
+
+        const { startListening, stopListening, isSupported: recognitionSupported } = useSpeechRecognition(handleTranscriptionResult, handleRecognitionError);
+
+        useEffect(() => { conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [conversation]);
+
+        const handleStartSession = () => { if (apiKeyError || !recognitionSupported) return; setConversation([]); setIsSessionActive(true); setStatus('idle'); setActiveInput(null); };
+        const handleEndSession = () => { setIsSessionActive(false); setStatus('idle'); setActiveInput(null); stopSpeaking(); stopListening(); };
+        const handleListenIndonesian = () => { if (status !== 'idle') return; setActiveInput('id'); setStatus('listening'); startListening('id-ID'); };
+        const handleListenPartner = () => { if (status !== 'idle') return; setActiveInput('partner'); setStatus('listening'); startListening(partnerLanguage); };
+        const handleCancelListening = () => { stopListening(); setStatus('idle'); setActiveInput(null); };
+        const handleReplay = useCallback((text, lang) => { if (status !== 'idle') return; setStatus('speaking'); speak(text, lang); }, [status, speak]);
+
+        const renderContent = () => {
+            if(apiKeyError) return e('div', { className: "text-center text-red-500 p-8" }, e('i', { className: "fa-solid fa-triangle-exclamation mr-2" }), "API Key not configured. Please see deployment instructions.");
+            if(!recognitionSupported) return e('div', { className: "text-center text-yellow-500 p-8" }, e('i', { className: "fa-solid fa-triangle-exclamation mr-2" }), "Speech recognition is not supported by your browser. Please use a modern browser like Chrome.");
+            if(conversation.length === 0 && isSessionActive) return e('div', { className: "text-center text-gray-500 p-8 flex flex-col items-center justify-center h-full animate-fade-in" }, e('i', { className: "fa-solid fa-microphone-stand text-6xl mb-4 text-gray-400" }), e('h2', { className: "text-2xl font-bold mb-2 text-gray-800" }, "Session Started"), e('p', null, "Press a button below to start speaking."));
+            if (!isSessionActive) return e('div', { className: "text-center text-gray-500 p-8 flex flex-col items-center justify-center h-full animate-fade-in" }, e('i', { className: "fa-solid fa-earth-asia text-6xl mb-4 text-gray-400" }), e('h2', { className: "text-2xl font-bold mb-2 text-gray-800" }, "Conversation Translator"), e('p', null, "Choose your partner's language and start a session."));
+            return e(React.Fragment, null, ...conversation.map(entry => e(ConversationBubble, { key: entry.id, entry, align: entry.sourceLang === 'id' ? 'right' : 'left', onReplay: handleReplay, status })));
+        }
+
+        const partnerLangName = partnerLanguage === 'en-US' ? 'English' : 'Japanese';
+
+        return e('div', { className: "flex flex-col h-screen font-sans bg-gray-100 text-gray-900" },
+          e('header', { className: "bg-white text-center p-4 shadow-md z-10" },
+            e('h1', { className: "text-xl font-bold tracking-wide" }, "Conversation Translator"),
+            e('p', { className: "text-sm text-sky-600 font-medium" }, `🇮🇩 Indonesian <-> ${partnerLangName}`)
+          ),
+          e('main', { className: "flex-1 p-4 overflow-y-auto" },
+            e('div', { className: "max-w-2xl mx-auto h-full" }, renderContent(), e('div', { ref: conversationEndRef }))
+          ),
+          e('footer', { className: "w-full" },
+            e(Controls, {
+              isSessionActive, status, activeInput, onStartSession, onEndSession, onListenIndonesian, onListenPartner,
+              onCancelListening, voices, selectedVoices, onVoiceChange, pitch, setPitch, rate, setRate,
+              isSpeechSupported: recognitionSupported && speechSupported, partnerLanguage, onPartnerLanguageChange: setPartnerLanguage,
+            })
+          )
+        );
+      };
+
+      // From index.tsx
+      const rootElement = document.getElementById('root');
+      if (!rootElement) throw new Error("Could not find root element to mount to");
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(e(React.StrictMode, null, e(App)));
+    </script>
+  </body>
+</html>
